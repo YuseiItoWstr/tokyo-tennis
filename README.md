@@ -10,7 +10,62 @@
 | Discord通知 | 空きに変化があったときのみWebhookで通知 |
 | 空き照会 | Discord `/req` で日付・コートを指定して照会 |
 | 予約確認 | Discord `/chk` で現在の予約一覧を表示 |
-| 日次レポート | 毎日0時にスクレイピング成功率をDiscordに送信 |
+| 日次レポート | 毎日23:59にスクレイピング成功率をDiscordに送信 |
+
+## Discord コマンド
+
+### `/req` — 空き照会
+
+`latest_merged.csv` を参照し、指定した日付・コートの空き状況を表示する。
+
+**操作手順：**
+1. 日付セレクトメニューから日付を選択（今日〜3週間先）
+2. コートセレクトメニューからコートを選択（個別 or 全て）
+3. 「実行」ボタンを押す
+
+**表示形式：**
+
+```
+🎾 空き状況 (2026/04/13)
+コート: 全て
+
+【OihutoA_hard】      【Kiba_grass】
+9:00  🟢 3件          13:00 🟡 1件
+11:00 🟢 4件          ...
+...
+
+データ取得日時: 2026/04/13 09:44:00
+```
+
+空き枠数によってアイコンが変わる：
+- 🟢 3枠以上
+- 🟡 1〜2枠
+- 🔴 空きなし（フィールド自体が非表示）
+
+**対応コート：**
+`AriakeA_hard` / `AriakeC_grass` / `Kameido_grass` / `Kiba_grass` / `OihutoA_hard` / `OihutoB_grass` / `OihutoB_hard` / `Sarue_grass` / `Toneri_grass`
+
+---
+
+### `/chk` — 予約確認
+
+都立公園予約サイトに Playwright でログインし、現在の予約一覧を取得して表示する。
+
+**表示形式：**
+
+```
+📋 コート予約状況（2件）
+
+🧾 予約 1
+📅 2026年4月13日（月）
+⏰ 9:00〜11:00
+🏞 井の頭公園テニスコート
+
+🧾 予約 2
+...
+```
+
+予約が0件の場合は `📭 現在、予約はありません` と表示。
 
 ## 構成
 
@@ -79,8 +134,8 @@ DATA_DIR=/path/to/tokyo-tennis/data
 # 1分おき: CSVマージ
 (crontab -l; echo "* * * * * PYTHONDONTWRITEBYTECODE=1 /path/to/venv/bin/python /path/to/notify/merge_csv.py >> /path/to/data/run_logs/merge.log 2>&1") | crontab -
 
-# 毎日0時: 日次レポートをDiscordに送信
-(crontab -l; echo "0 0 * * * PYTHONDONTWRITEBYTECODE=1 /path/to/venv/bin/python /path/to/notify/daily_report.py >> /path/to/data/run_logs/daily_report.log 2>&1") | crontab -
+# 毎日23:59: 日次レポートをDiscordに送信
+(crontab -l; echo "59 23 * * * PYTHONDONTWRITEBYTECODE=1 /path/to/venv/bin/python /path/to/notify/daily_report.py >> /path/to/data/run_logs/daily_report.log 2>&1") | crontab -
 ```
 
 ### 4. systemd サービス起動
