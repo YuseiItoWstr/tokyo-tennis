@@ -1,6 +1,6 @@
 """
 日次スクレイピングレポートをDiscordに送信する
-毎日0時にcronから実行される
+毎日23:59にcronから実行される
 """
 import os
 import sys
@@ -27,8 +27,7 @@ def generate_report(now: datetime) -> Path:
 
 
 def send_to_discord(png_path: Path, now: datetime):
-    label = now.strftime("%Y-%m-%d")
-    content = f"**日次スクレイピングレポート {label}**"
+    content = f"**IWS スクレイピングレポート**"
     with open(png_path, "rb") as f:
         resp = requests.post(
             WEBHOOK_URL,
