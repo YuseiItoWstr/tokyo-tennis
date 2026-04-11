@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rm -rf /home/yusei/tokyo-tennis/rsv)",
+      "Bash(rm /home/yusei/tokyo-tennis/.claude/commands/site-check.md /home/yusei/tokyo-tennis/.claude/commands/bot-logs.md /home/yusei/tokyo-tennis/.claude/commands/rsv-queue.md)",
+      "Bash(xdg-open:*)",
+      "Bash(PYTHONDONTWRITEBYTECODE=1 venv/bin/python:*)",
+      "Bash(crontab:*)"
+    ]
+  }
+}
