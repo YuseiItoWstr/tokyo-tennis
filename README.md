@@ -11,6 +11,7 @@
 | 空き照会 | Discord `/req` で日付・コートを指定して照会 |
 | 予約確認 | Discord `/chk` で現在の予約一覧を表示 |
 | 日次レポート | 毎日23:59にスクレイピング成功率をDiscordに送信 |
+| 予約リマインダー | 毎日23:00に翌日の予約をDiscordに通知（予約がない日は通知なし） |
 
 ## Discord コマンド
 
@@ -67,6 +68,30 @@
 
 予約が0件の場合は `📭 現在、予約はありません` と表示。
 
+---
+
+### 予約リマインダー — 自動通知
+
+毎日23:00にcronから `notify/reminder.py` が実行され、翌日に予約があればWebhookで通知する。予約がない日は通知しない。
+
+**通知形式：**
+
+```
+🎾 明日のテニスコート予約リマインダー
+
+予約 1
+📅 4月18日(土曜)2026年
+⏰ 13時00分～15時00分
+🏞 大井ふ頭海浜公園Ｂ 人工芝
+```
+
+**テスト実行：**
+
+```bash
+# 基準日を指定して翌日の予約のみ送信
+venv/bin/python notify/reminder.py --today 2026-04-17
+```
+
 ## 構成
 
 ```
@@ -76,6 +101,7 @@ tokyo-tennis/
 │   ├── merge_csv.py     # 全コートCSVをマージ
 │   ├── run_all.sh       # 7コート並列起動（重複実行防止付き）
 │   ├── daily_report.py  # 日次レポート生成・Discord送信
+│   ├── reminder.py      # 翌日の予約リマインダー送信
 │   └── envs/            # コートごとの環境変数（gitignore済み）
 ├── chk/                 # Discord Bot: /chk（予約一覧確認）
 ├── req/                 # Discord Bot: /req（空き照会）
@@ -136,6 +162,9 @@ DATA_DIR=/path/to/tokyo-tennis/data
 
 # 毎日23:59: 日次レポートをDiscordに送信
 (crontab -l; echo "59 23 * * * PYTHONDONTWRITEBYTECODE=1 /path/to/venv/bin/python /path/to/notify/daily_report.py >> /path/to/data/run_logs/daily_report.log 2>&1") | crontab -
+
+# 毎日23:00: 翌日の予約リマインダーをDiscordに送信
+(crontab -l; echo "0 23 * * * PYTHONDONTWRITEBYTECODE=1 /path/to/venv/bin/python /path/to/notify/reminder.py >> /path/to/data/run_logs/reminder.log 2>&1") | crontab -
 ```
 
 ### 4. systemd サービス起動
