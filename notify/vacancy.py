@@ -23,6 +23,7 @@ load_dotenv(_args.env_file, override=True)
 JST = timezone(timedelta(hours=9))
 TORITSU_URL = "https://kouen.sports.metro.tokyo.lg.jp/web/index.jsp"
 DISCORD_FINE_WEBHOOK_URL = os.environ["DISCORD_FINE_WEBHOOK_URL"]
+DISCORD_NOTIFY = os.getenv("DISCORD_NOTIFY", "true") != "false"
 DATA_DIR = os.getenv("DATA_DIR", os.path.join(os.path.expanduser("~"), "tokyo-tennis", "data"))
 
 
@@ -390,7 +391,7 @@ def main():
         same = current == previous
         LocalRepository.save_text(weekend_key, current)
 
-        if weekend_holiday_avails and not same:
+        if weekend_holiday_avails and not same and DISCORD_NOTIFY:
             DiscordNotifier.send_to_discord(
                 DISCORD_FINE_WEBHOOK_URL,
                 DiscordNotifier.build_discord_message(weekend_holiday_avails),
