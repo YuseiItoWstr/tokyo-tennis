@@ -4,6 +4,7 @@ import json
 import urllib.request
 import logging
 import io
+import fcntl
 from datetime import timedelta, timezone, datetime, date as date_type
 
 import argparse
@@ -383,19 +384,20 @@ def main():
                 browser.close()
                 logger.info("Browser closed")
 
-        # 前回との差分チェック & Discord通知（最優先）
+        # 前回との差分チェック & Discord通知（排他ロックで重複通知を防ぐ）
         weekend_key = f"{location_name}_{court_value}/latest_avails.txt"
         current = LocalRepository.serialize_weekend_avails(weekend_holiday_avails)
-        previous = LocalRepository.load_text(weekend_key)
-
-        same = current == previous
-        LocalRepository.save_text(weekend_key, current)
-
-        if weekend_holiday_avails and not same and DISCORD_NOTIFY:
-            DiscordNotifier.send_to_discord(
-                DISCORD_FINE_WEBHOOK_URL,
-                DiscordNotifier.build_discord_message(weekend_holiday_avails),
-            )
+        lock_path = os.path.join(DATA_DIR, f"{location_name}_{court_value}", "notify.lock")
+        with open(lock_path, "w") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            previous = LocalRepository.load_text(weekend_key)
+            same = current == previous
+            LocalRepository.save_text(weekend_key, current)
+            if weekend_holiday_avails and not same and DISCORD_NOTIFY:
+                DiscordNotifier.send_to_discord(
+                    DISCORD_FINE_WEBHOOK_URL,
+                    DiscordNotifier.build_discord_message(weekend_holiday_avails),
+                )
 
 
         logger.info("Script finished successfully")

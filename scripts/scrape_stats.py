@@ -1,6 +1,6 @@
 """直近3時間のスクレイピング成功率を可視化するスクリプト。
 
-成功判定: 各2分枠内にCSVファイルが生成されているか
+成功判定: 各30秒枠内にCSVファイルが生成されているか
 """
 
 import argparse
@@ -12,9 +12,11 @@ JST = ZoneInfo("Asia/Tokyo")
 DATA_DIR = Path(__file__).parent.parent / "data"
 COURTS = [
     "OihutoA_hard", "OihutoB_hard", "OihutoB_grass",
-    "Sarue_grass", "AriakeA_hard", "Kameido_grass", "Kiba_grass",
+    "Sarue_grass", "AriakeA_hard", "AriakeB_hard", "AriakeC_grass",
+    "Kameido_grass", "Kiba_grass", "Oshima_grass",
 ]
-INTERVAL = 2  # 分
+INTERVAL_SEC = 30  # 秒
+BAR_GROUP_SEC = 120  # バー1文字あたりの秒数（視覚的密度を維持）
 
 
 def get_csv_timestamps(court: str) -> list[datetime]:
@@ -33,22 +35,23 @@ def get_csv_timestamps(court: str) -> list[datetime]:
 
 
 def build_slots(now: datetime, hours: int = 3) -> list[datetime]:
-    """直近 hours 時間の2分枠のスロット一覧を返す（古い順）"""
+    """直近 hours 時間の30秒枠スロット一覧を返す（古い順）"""
     start = now - timedelta(hours=hours)
-    # 2分単位に切り捨て
-    start = start.replace(second=0, microsecond=0)
-    start = start.replace(minute=(start.minute // INTERVAL) * INTERVAL)
+    # 30秒単位に切り捨て
+    total_sec = start.minute * 60 + start.second
+    floored_sec = (total_sec // INTERVAL_SEC) * INTERVAL_SEC
+    start = start.replace(minute=floored_sec // 60, second=floored_sec % 60, microsecond=0)
     slots = []
     slot = start
     while slot <= now:
         slots.append(slot)
-        slot += timedelta(minutes=INTERVAL)
+        slot += timedelta(seconds=INTERVAL_SEC)
     return slots
 
 
 def check_success(slot: datetime, timestamps: list[datetime]) -> bool:
-    """スロット内（±2分）にCSVが存在すれば成功"""
-    window_end = slot + timedelta(minutes=INTERVAL)
+    """スロット内（30秒枠）にCSVが存在すれば成功"""
+    window_end = slot + timedelta(seconds=INTERVAL_SEC)
     return any(slot <= t < window_end for t in timestamps)
 
 
@@ -77,7 +80,7 @@ def render(now: datetime | None = None, hours: int = 3):
     # 時間帯別バーチャート（1時間ごと、母数 = スロット数 × コート数）
     print(f"\n【時間帯別 成功率】 (● = 全コート成功, ○ = 1台以上失敗)")
     hour_start = (now - timedelta(hours=hours - 1)).replace(minute=0, second=0, microsecond=0)
-    for h in range(hours):
+    for h in range(max(1, int(hours))):
         hour = (hour_start + timedelta(hours=h))
         hour_slots = [
             i for i, s in enumerate(slots)
@@ -87,9 +90,11 @@ def render(now: datetime | None = None, hours: int = 3):
             continue
         success_count = sum(court_results[c][i] for c in COURTS for i in hour_slots)
         rate = success_count / (len(hour_slots) * len(COURTS)) * 100
+        # BAR_GROUP_SEC ごとに1文字（視覚的密度を2分間隔時代と同等に保つ）
+        group_size = BAR_GROUP_SEC // INTERVAL_SEC
         bar = "".join(
-            "●" if all(court_results[c][i] for c in COURTS) else "○"
-            for i in hour_slots
+            "●" if all(court_results[c][i] for c in COURTS for i in hour_slots[g:g+group_size]) else "○"
+            for g in range(0, len(hour_slots), group_size)
         )
         print(f"  {hour.strftime('%m/%d %H:00')}  [{bar}]  {rate:.0f}%")
 
@@ -123,7 +128,7 @@ def render(now: datetime | None = None, hours: int = 3):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--before", help="集計終了時刻 (例: '2026-04-06 17:00')", default=None)
-    parser.add_argument("--hours", type=int, default=3, help="集計時間幅（デフォルト: 3）")
+    parser.add_argument("--hours", type=float, default=3, help="集計時間幅（デフォルト: 3）")
     args = parser.parse_args()
     end_time = (
         datetime.strptime(args.before, "%Y-%m-%d %H:%M").replace(tzinfo=JST)
