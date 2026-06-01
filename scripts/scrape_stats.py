@@ -1,6 +1,6 @@
-"""直近3時間のスクレイピング成功率を可視化するスクリプト。
+"""直近N時間のスクレイピング成功率を可視化するスクリプト。
 
-成功判定: 各30秒枠内にCSVファイルが生成されているか
+成功判定: ログファイルに "Script finished successfully" が含まれるか
 """
 
 import argparse
@@ -15,112 +15,110 @@ COURTS = [
     "Sarue_grass", "AriakeA_hard", "AriakeB_hard", "AriakeC_grass",
     "Kameido_grass", "Kiba_grass", "Oshima_grass",
 ]
-INTERVAL_SEC = 30  # 秒
-BAR_GROUP_SEC = 120  # バー1文字あたりの秒数（視覚的密度を維持）
 
 
-def get_csv_timestamps(court: str) -> list[datetime]:
-    """コートのCSVファイルのタイムスタンプ一覧を返す"""
-    csv_dir = DATA_DIR / court / "csv"
-    if not csv_dir.exists():
+def get_log_results(court: str, start: datetime, end: datetime) -> list[tuple[datetime, bool]]:
+    """(実行時刻, 成功フラグ) のリストを返す（古い順）"""
+    log_dir = DATA_DIR / court / "log"
+    if not log_dir.exists():
         return []
-    timestamps = []
-    for f in csv_dir.iterdir():
+    results = []
+    for f in log_dir.iterdir():
         try:
-            dt = datetime.strptime(f.stem, "%Y-%m-%d_%H:%M:%S").replace(tzinfo=JST)
-            timestamps.append(dt)
+            dt = datetime.strptime(f.stem, "%Y-%m-%d_%H%M%S").replace(tzinfo=JST)
         except ValueError:
-            pass
-    return timestamps
+            continue
+        if not (start <= dt <= end):
+            continue
+        text = f.read_text(errors="ignore")
+        ok = "Script finished successfully" in text
+        results.append((dt, ok))
+    results.sort()
+    return results
 
 
-def build_slots(now: datetime, hours: int = 3) -> list[datetime]:
-    """直近 hours 時間の30秒枠スロット一覧を返す（古い順）"""
-    start = now - timedelta(hours=hours)
-    # 30秒単位に切り捨て
-    total_sec = start.minute * 60 + start.second
-    floored_sec = (total_sec // INTERVAL_SEC) * INTERVAL_SEC
-    start = start.replace(minute=floored_sec // 60, second=floored_sec % 60, microsecond=0)
-    slots = []
-    slot = start
-    while slot <= now:
-        slots.append(slot)
-        slot += timedelta(seconds=INTERVAL_SEC)
-    return slots
-
-
-def check_success(slot: datetime, timestamps: list[datetime]) -> bool:
-    """スロット内（30秒枠）にCSVが存在すれば成功"""
-    window_end = slot + timedelta(seconds=INTERVAL_SEC)
-    return any(slot <= t < window_end for t in timestamps)
-
-
-def render(now: datetime | None = None, hours: int = 3):
+def render(now: datetime | None = None, hours: float = 3):
     now = now or datetime.now(JST)
-    slots = build_slots(now, hours)
-    total_slots = len(slots)
+    start = now - timedelta(hours=hours)
 
-    # コートごとの成功フラグ取得
-    court_results: dict[str, list[bool]] = {}
+    # コートごとの実行結果取得
+    court_results: dict[str, list[tuple[datetime, bool]]] = {}
     for court in COURTS:
-        timestamps = get_csv_timestamps(court)
-        court_results[court] = [check_success(s, timestamps) for s in slots]
+        court_results[court] = get_log_results(court, start, now)
 
     print(f"\n{'='*60}")
     print(f"  スクレイピング成功率レポート（直近{hours}時間）")
     print(f"  集計時刻: {now.strftime('%Y-%m-%d %H:%M')} JST")
     print(f"{'='*60}")
 
-    # 全体サマリー（母数 = スロット数 × コート数）
-    total_runs = total_slots * len(COURTS)
-    total_success = sum(court_results[c][i] for c in COURTS for i in range(total_slots))
+    # 全体サマリー
+    total_runs = sum(len(r) for r in court_results.values())
+    total_success = sum(ok for r in court_results.values() for _, ok in r)
     overall_rate = total_success / total_runs * 100 if total_runs else 0
-    print(f"\n【全体】 期待実行: {total_runs}回 / 成功: {total_success}回 / 成功率: {overall_rate:.1f}%")
+    print(f"\n【全体】 実行: {total_runs}回 / 成功: {total_success}回 / 成功率: {overall_rate:.1f}%")
 
-    # 時間帯別バーチャート（1時間ごと、母数 = スロット数 × コート数）
-    print(f"\n【時間帯別 成功率】 (● = 全コート成功, ○ = 1台以上失敗)")
-    hour_start = (now - timedelta(hours=hours - 1)).replace(minute=0, second=0, microsecond=0)
+    # 時間帯別バーチャート（1時間ごと）
+    print(f"\n【時間帯別 成功率】 (● = 全コート90%超, ○ = 1台以上低下)")
     for h in range(max(1, int(hours))):
-        hour = (hour_start + timedelta(hours=h))
-        hour_slots = [
-            i for i, s in enumerate(slots)
-            if s.hour == hour.hour and s.date() == hour.date()
-        ]
-        if not hour_slots:
+        hour_start = (start + timedelta(hours=h)).replace(minute=0, second=0, microsecond=0)
+        hour_end = hour_start + timedelta(hours=1)
+        # 各コートのこの時間帯の成功率
+        rates = []
+        for court in COURTS:
+            runs = [(dt, ok) for dt, ok in court_results[court] if hour_start <= dt < hour_end]
+            if runs:
+                rates.append(sum(ok for _, ok in runs) / len(runs))
+        if not rates:
             continue
-        success_count = sum(court_results[c][i] for c in COURTS for i in hour_slots)
-        rate = success_count / (len(hour_slots) * len(COURTS)) * 100
-        # BAR_GROUP_SEC ごとに1文字（視覚的密度を2分間隔時代と同等に保つ）
-        group_size = BAR_GROUP_SEC // INTERVAL_SEC
-        bar = "".join(
-            "●" if all(court_results[c][i] for c in COURTS for i in hour_slots[g:g+group_size]) else "○"
-            for g in range(0, len(hour_slots), group_size)
-        )
-        print(f"  {hour.strftime('%m/%d %H:00')}  [{bar}]  {rate:.0f}%")
+        overall = sum(rates) / len(rates) * 100
+        # 2分ごとに1文字のバー
+        bar_chars = []
+        for m in range(0, 60, 2):
+            seg_start = hour_start + timedelta(minutes=m)
+            seg_end = seg_start + timedelta(minutes=2)
+            seg_ok = sum(
+                ok for c in COURTS
+                for dt, ok in court_results[c]
+                if seg_start <= dt < seg_end
+            )
+            seg_total = sum(
+                1 for c in COURTS
+                for dt, _ in court_results[c]
+                if seg_start <= dt < seg_end
+            )
+            if seg_total == 0:
+                bar_chars.append("░")
+            elif seg_ok / seg_total >= 0.9:
+                bar_chars.append("●")
+            else:
+                bar_chars.append("○")
+        print(f"  {hour_start.strftime('%m/%d %H:00')}  [{''.join(bar_chars)}]  {overall:.0f}%")
 
     # コート別サマリー
     print(f"\n【コート別 成功率】")
     name_width = max(len(c) for c in COURTS)
     for court in COURTS:
         results = court_results[court]
-        success = sum(results)
-        rate = success / total_slots * 100 if total_slots else 0
+        total = len(results)
+        success = sum(ok for _, ok in results)
+        rate = success / total * 100 if total else 0
         bar_len = 20
         filled = round(rate / 100 * bar_len)
         bar = "█" * filled + "░" * (bar_len - filled)
-        print(f"  {court:<{name_width}}  [{bar}]  {rate:.1f}%")
+        print(f"  {court:<{name_width}}  [{bar}]  {rate:.1f}%  ({success}/{total})")
 
-    # 直近の失敗確認（いずれかのコートが失敗したスロット）
-    recent_failures = [
-        slots[i] for i in range(max(0, total_slots - 10), total_slots)
-        if not all(court_results[c][i] for c in COURTS)
-    ]
-    if recent_failures:
-        print(f"\n⚠️  直近10スロットの失敗: {len(recent_failures)}件")
-        for s in recent_failures:
-            print(f"     {s.strftime('%H:%M')}")
+    # 直近の失敗確認（全コート合わせた直近20実行）
+    recent = sorted(
+        [(dt, court, ok) for court in COURTS for dt, ok in court_results[court]],
+        reverse=True
+    )[:20]
+    recent_fails = [(dt, court) for dt, court, ok in recent if not ok]
+    if recent_fails:
+        print(f"\n⚠️  直近20実行の失敗: {len(recent_fails)}件")
+        for dt, court in recent_fails:
+            print(f"     {dt.strftime('%H:%M:%S')}  {court}")
     else:
-        print(f"\n✅  直近10スロットはすべて正常稼働")
+        print(f"\n✅  直近20実行はすべて正常稼働")
 
     print(f"\n{'='*60}\n")
 

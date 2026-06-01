@@ -26,6 +26,7 @@ TORITSU_URL = "https://kouen.sports.metro.tokyo.lg.jp/web/index.jsp"
 DISCORD_FINE_WEBHOOK_URL = os.environ["DISCORD_FINE_WEBHOOK_URL"]
 DISCORD_NOTIFY = os.getenv("DISCORD_NOTIFY", "true") != "false"
 DATA_DIR = os.getenv("DATA_DIR", os.path.join(os.path.expanduser("~"), "tokyo-tennis", "data"))
+LOADING_TIMEOUT_MS = int(os.getenv("LOADING_TIMEOUT_MS", "20000"))
 
 
 
@@ -163,7 +164,7 @@ class ToritsuBrowser:
             page.wait_for_selector("#loadingweek", timeout=3000)
         except Exception:
             pass
-        page.wait_for_selector("#loadingweek", state="hidden", timeout=20000)
+        page.wait_for_selector("#loadingweek", state="hidden", timeout=LOADING_TIMEOUT_MS)
         page.wait_for_selector("#week-info tr")
 
     #! 有明 A ハード等、一部コートで次週ボタン押下時に不具合が出るため、安定化処理を追加
@@ -181,7 +182,7 @@ class ToritsuBrowser:
             page.wait_for_selector("#loadingweek", timeout=3000)
         except Exception:
             pass
-        page.wait_for_selector("#loadingweek", state="hidden", timeout=20000)
+        page.wait_for_selector("#loadingweek", state="hidden", timeout=LOADING_TIMEOUT_MS)
         page.wait_for_selector("#week-info")
 
 
