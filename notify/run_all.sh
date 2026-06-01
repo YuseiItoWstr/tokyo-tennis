@@ -1,6 +1,6 @@
 #!/bin/bash
 DIR="$(cd "$(dirname "$0")" && pwd)"
-PYTHON="$DIR/../venv/bin/python"
+PYTHON="${PYTHON:-$DIR/../venv/bin/python}"
 export PYTHONDONTWRITEBYTECODE=1
 RUN_LOG="$DIR/../data/run_logs"
 mkdir -p "$RUN_LOG"
