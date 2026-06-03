@@ -1,6 +1,9 @@
-"""直近N時間のスクレイピング成功率を可視化するスクリプト。
+"""直近N時間のスクレイピングカバレッジを可視化するスクリプト。
 
-成功判定: ログファイルに "Script finished successfully" が含まれるか
+指標: CSVファイルのタイムスタンプベース
+  - 平均取得間隔: 連続するCSV間の平均時間
+  - 最大空白時間: 連続するCSV間の最大ギャップ
+  - 空白回数: 閾値(GAP_THRESHOLD_MIN)を超えたギャップ数
 """
 
 import argparse
@@ -10,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 JST = ZoneInfo("Asia/Tokyo")
 DATA_DIR = Path(__file__).parent.parent / "data"
+GAP_THRESHOLD_MIN = 5  # これ以上空白が空くと問題とみなす（分）
 COURTS = [
     "OihutoA_hard", "OihutoB_hard", "OihutoB_grass",
     "Sarue_grass", "AriakeA_hard", "AriakeB_hard", "AriakeC_grass",
@@ -17,108 +21,112 @@ COURTS = [
 ]
 
 
-def get_log_results(court: str, start: datetime, end: datetime) -> list[tuple[datetime, bool]]:
-    """(実行時刻, 成功フラグ) のリストを返す（古い順）"""
-    log_dir = DATA_DIR / court / "log"
-    if not log_dir.exists():
+def get_csv_times(court: str, start: datetime, end: datetime) -> list[datetime]:
+    """期間内のCSV取得時刻リストを返す（古い順）"""
+    csv_dir = DATA_DIR / court / "csv"
+    if not csv_dir.exists():
         return []
-    results = []
-    for f in log_dir.iterdir():
+    times = []
+    for f in csv_dir.iterdir():
         try:
-            dt = datetime.strptime(f.stem, "%Y-%m-%d_%H%M%S").replace(tzinfo=JST)
+            dt = datetime.strptime(f.stem, "%Y-%m-%d_%H:%M:%S").replace(tzinfo=JST)
         except ValueError:
             continue
-        if not (start <= dt <= end):
-            continue
-        text = f.read_text(errors="ignore")
-        ok = "Script finished successfully" in text
-        results.append((dt, ok))
-    results.sort()
-    return results
+        if start <= dt <= end:
+            times.append(dt)
+    return sorted(times)
+
+
+def calc_gaps(times: list[datetime]) -> list[float]:
+    """連続するCSV間のギャップ（秒）リストを返す"""
+    if len(times) < 2:
+        return []
+    return [(times[i + 1] - times[i]).total_seconds() for i in range(len(times) - 1)]
 
 
 def render(now: datetime | None = None, hours: float = 3):
     now = now or datetime.now(JST)
     start = now - timedelta(hours=hours)
 
-    # コートごとの実行結果取得
-    court_results: dict[str, list[tuple[datetime, bool]]] = {}
+    court_times: dict[str, list[datetime]] = {}
+    court_gaps: dict[str, list[float]] = {}
     for court in COURTS:
-        court_results[court] = get_log_results(court, start, now)
+        times = get_csv_times(court, start, now)
+        court_times[court] = times
+        court_gaps[court] = calc_gaps(times)
 
     print(f"\n{'='*60}")
-    print(f"  スクレイピング成功率レポート（直近{hours}時間）")
+    print(f"  スクレイピングカバレッジレポート（直近{hours}時間）")
     print(f"  集計時刻: {now.strftime('%Y-%m-%d %H:%M')} JST")
+    print(f"  空白閾値: {GAP_THRESHOLD_MIN}分")
     print(f"{'='*60}")
 
     # 全体サマリー
-    total_runs = sum(len(r) for r in court_results.values())
-    total_success = sum(ok for r in court_results.values() for _, ok in r)
-    overall_rate = total_success / total_runs * 100 if total_runs else 0
-    print(f"\n【全体】 実行: {total_runs}回 / 成功: {total_success}回 / 成功率: {overall_rate:.1f}%")
+    all_gaps = [g for gaps in court_gaps.values() for g in gaps]
+    all_counts = [len(t) for t in court_times.values()]
+    total_csv = sum(all_counts)
+    avg_interval = sum(all_gaps) / len(all_gaps) if all_gaps else 0
+    max_gap = max(all_gaps) if all_gaps else 0
+    big_gaps = sum(1 for g in all_gaps if g > GAP_THRESHOLD_MIN * 60)
+    print(f"\n【全体】 取得数: {total_csv}件 / 平均間隔: {avg_interval:.0f}秒 / 最大空白: {max_gap/60:.1f}分 / {GAP_THRESHOLD_MIN}分超空白: {big_gaps}回")
 
-    # 時間帯別バーチャート（1時間ごと）
-    print(f"\n【時間帯別 成功率】 (● = 全コート90%超, ○ = 1台以上低下)")
+    # 時間帯別バーチャート（1時間ごと、2分スロット）
+    # ● = 全コートで直近5分以内にCSVあり、○ = 一部コートで空白、░ = データなし
+    print(f"\n【時間帯別カバレッジ】 (● = 全コート5分以内OK, ○ = 一部空白, ░ = 未取得)")
     for h in range(max(1, int(hours))):
         hour_start = (start + timedelta(hours=h)).replace(minute=0, second=0, microsecond=0)
+        if hour_start < start:
+            hour_start = start
         hour_end = hour_start + timedelta(hours=1)
-        # 各コートのこの時間帯の成功率
-        rates = []
-        for court in COURTS:
-            runs = [(dt, ok) for dt, ok in court_results[court] if hour_start <= dt < hour_end]
-            if runs:
-                rates.append(sum(ok for _, ok in runs) / len(runs))
-        if not rates:
-            continue
-        overall = sum(rates) / len(rates) * 100
-        # 2分ごとに1文字のバー
         bar_chars = []
-        for m in range(0, 60, 2):
-            seg_start = hour_start + timedelta(minutes=m)
-            seg_end = seg_start + timedelta(minutes=2)
-            seg_ok = sum(
-                ok for c in COURTS
-                for dt, ok in court_results[c]
-                if seg_start <= dt < seg_end
-            )
-            seg_total = sum(
-                1 for c in COURTS
-                for dt, _ in court_results[c]
-                if seg_start <= dt < seg_end
-            )
-            if seg_total == 0:
+        m = 0
+        while m < 60:
+            slot_end = hour_start + timedelta(minutes=m + 2)
+            if slot_end > now:
+                break
+            covered = 0
+            for court in COURTS:
+                # このスロット終端時点で直近GAP_THRESHOLD_MIN分以内にCSVがあるか
+                recent = [t for t in court_times[court] if t <= slot_end]
+                if recent and (slot_end - recent[-1]).total_seconds() <= GAP_THRESHOLD_MIN * 60:
+                    covered += 1
+            if not any(t <= slot_end for c in COURTS for t in court_times[c]):
                 bar_chars.append("░")
-            elif seg_ok / seg_total >= 0.9:
+            elif covered == len(COURTS):
                 bar_chars.append("●")
             else:
                 bar_chars.append("○")
-        print(f"  {hour_start.strftime('%m/%d %H:00')}  [{''.join(bar_chars)}]  {overall:.0f}%")
+            m += 2
+        if bar_chars:
+            print(f"  {hour_start.strftime('%m/%d %H:00')}  [{''.join(bar_chars)}]")
 
     # コート別サマリー
-    print(f"\n【コート別 成功率】")
+    print(f"\n【コート別】")
     name_width = max(len(c) for c in COURTS)
     for court in COURTS:
-        results = court_results[court]
-        total = len(results)
-        success = sum(ok for _, ok in results)
-        rate = success / total * 100 if total else 0
-        bar_len = 20
-        filled = round(rate / 100 * bar_len)
-        bar = "█" * filled + "░" * (bar_len - filled)
-        print(f"  {court:<{name_width}}  [{bar}]  {rate:.1f}%  ({success}/{total})")
+        times = court_times[court]
+        gaps = court_gaps[court]
+        count = len(times)
+        avg = sum(gaps) / len(gaps) if gaps else 0
+        max_g = max(gaps) if gaps else 0
+        big = sum(1 for g in gaps if g > GAP_THRESHOLD_MIN * 60)
+        flag = "⚠️ " if big > 0 else "✅ "
+        print(f"  {flag}{court:<{name_width}}  取得: {count:3d}件  平均間隔: {avg:5.0f}秒  最大空白: {max_g/60:4.1f}分  {GAP_THRESHOLD_MIN}分超: {big}回")
 
-    # 直近の失敗確認（全コート合わせた直近20実行）
-    recent = sorted(
-        [(dt, court, ok) for court in COURTS for dt, ok in court_results[court]],
-        reverse=True
-    )[:20]
-    recent_fails = [(dt, court) for dt, court, ok in recent if not ok]
-    if recent_fails:
-        print(f"\n⚠️  直近20実行の失敗: {len(recent_fails)}件")
-        for dt, court in recent_fails:
-            print(f"     {dt.strftime('%H:%M:%S')}  {court}")
+    # 5分超空白の詳細
+    big_gap_details = []
+    for court in COURTS:
+        times = court_times[court]
+        for i, g in enumerate(court_gaps[court]):
+            if g > GAP_THRESHOLD_MIN * 60:
+                big_gap_details.append((times[i], times[i + 1], g, court))
+    if big_gap_details:
+        big_gap_details.sort()
+        print(f"\n⚠️  {GAP_THRESHOLD_MIN}分超の空白一覧:")
+        for t_from, t_to, g, court in big_gap_details:
+            print(f"     {t_from.strftime('%H:%M')}〜{t_to.strftime('%H:%M')} ({g/60:.1f}分)  {court}")
     else:
-        print(f"\n✅  直近20実行はすべて正常稼働")
+        print(f"\n✅  {GAP_THRESHOLD_MIN}分超の空白なし（全コート正常稼働）")
 
     print(f"\n{'='*60}\n")
 

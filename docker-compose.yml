@@ -9,20 +9,10 @@ services:
     entrypoint: ["/app/notify/docker_entrypoint.sh"]
     restart: unless-stopped
 
-  scraper-20:
+  scraper-30:
     build: .
     environment:
-      - SCRAPE_OFFSET=20
-    volumes:
-      - ./data:/app/data
-      - ./notify/envs:/app/notify/envs:ro
-    entrypoint: ["/app/notify/docker_entrypoint.sh"]
-    restart: unless-stopped
-
-  scraper-40:
-    build: .
-    environment:
-      - SCRAPE_OFFSET=40
+      - SCRAPE_OFFSET=30
     volumes:
       - ./data:/app/data
       - ./notify/envs:/app/notify/envs:ro
@@ -39,20 +29,10 @@ services:
     entrypoint: ["/app/notify/docker_entrypoint.sh"]
     restart: unless-stopped
 
-  scraper-80:
+  scraper-90:
     build: .
     environment:
-      - SCRAPE_OFFSET=80
-    volumes:
-      - ./data:/app/data
-      - ./notify/envs:/app/notify/envs:ro
-    entrypoint: ["/app/notify/docker_entrypoint.sh"]
-    restart: unless-stopped
-
-  scraper-100:
-    build: .
-    environment:
-      - SCRAPE_OFFSET=100
+      - SCRAPE_OFFSET=90
     volumes:
       - ./data:/app/data
       - ./notify/envs:/app/notify/envs:ro

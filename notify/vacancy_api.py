@@ -1,17 +1,21 @@
+"""
+vacancy_api.py — Playwright不要の軽量スクレイパー
+
+ブラウザが内部で叩いているJSON APIを直接呼び出す。
+出力フォーマット（CSV/ログ/Discord通知）はvacancy.pyと同一。
+"""
 import os
-import re
 import json
 import urllib.request
 import logging
 import io
 import fcntl
-from datetime import timedelta, timezone, datetime, date as date_type
-
 import argparse
+import requests
 import pandas as pd
 import jpholiday
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
-from playwright.sync_api import sync_playwright, Page
 
 _parser = argparse.ArgumentParser()
 _parser.add_argument("--env-file", default=None)
@@ -19,20 +23,19 @@ _args = _parser.parse_args()
 load_dotenv(_args.env_file, override=True)
 
 # =========================
-# 定数定義
+# 定数
 # =========================
 JST = timezone(timedelta(hours=9))
-TORITSU_URL = "https://kouen.sports.metro.tokyo.lg.jp/web/index.jsp"
+BASE_URL = "https://kouen.sports.metro.tokyo.lg.jp/web"
+DOMAIN = "kouen.sports.metro.tokyo.lg.jp"
+
 DISCORD_FINE_WEBHOOK_URL = os.environ["DISCORD_FINE_WEBHOOK_URL"]
 DISCORD_NOTIFY = os.getenv("DISCORD_NOTIFY", "true") != "false"
 DATA_DIR = os.getenv("DATA_DIR", os.path.join(os.path.expanduser("~"), "tokyo-tennis", "data"))
-LOADING_TIMEOUT_MS = int(os.getenv("LOADING_TIMEOUT_MS", "20000"))
+API_TIMEOUT = int(os.getenv("API_TIMEOUT", "30"))   # 秒
+API_RETRIES = int(os.getenv("API_RETRIES", "3"))
 
 
-
-# =========================
-# 環境変数読み込み
-# =========================
 def load_env_dict(name: str) -> dict:
     raw = os.getenv(name)
     if not raw:
@@ -44,24 +47,19 @@ def load_env_dict(name: str) -> dict:
 
 
 # =========================
-# ログ管理
+# ログ管理（vacancy.pyと同一）
 # =========================
 class LogManager:
     @staticmethod
     def setup_logger():
         log_stream = io.StringIO()
-
-        logger = logging.getLogger("court_vacancy")
+        logger = logging.getLogger("court_vacancy_api")
         logger.setLevel(logging.INFO)
         logger.handlers.clear()
-
         formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
-
         handler = logging.StreamHandler(log_stream)
         handler.setFormatter(formatter)
-
         logger.addHandler(handler)
-
         return logger, log_stream
 
     @staticmethod
@@ -72,7 +70,7 @@ class LogManager:
 
 
 # =========================
-# ローカルファイル入出力
+# ローカルファイル入出力（vacancy.pyと同一）
 # =========================
 class LocalRepository:
     @staticmethod
@@ -110,7 +108,7 @@ class LocalRepository:
 
 
 # =========================
-# Discord 通知
+# Discord通知（vacancy.pyと同一）
 # =========================
 class DiscordNotifier:
     @staticmethod
@@ -132,171 +130,29 @@ class DiscordNotifier:
             lines.append("**【平日夜の空き】**")
         else:
             lines.append("🚨🚨**【土日祝の空き】**🚨🚨")
-
         for date, _, rsv_time, location, vacants in avails:
             lines.append(f"- {date} {rsv_time} {location}（{vacants}枠）")
-
         return "\n".join(lines)
 
 
 # =========================
-# Playwright ブラウザ操作
-# =========================
-class ToritsuBrowser:
-    def setup_browser(self, playwright) -> tuple:
-        browser = playwright.chromium.launch(headless=True)
-        page = browser.new_page()
-        page.goto(TORITSU_URL, timeout=30000)
-        page.wait_for_selector("#purpose-home")
-        return browser, page
-
-    def select_court_and_location(self, page: Page, court_id: str, location_id: str):
-        page.wait_for_selector("#purpose-home")
-        page.select_option("#purpose-home", value=court_id)
-
-        # Ajax で location が更新されるのを待つ（option は hidden のため attached で待つ）
-        page.wait_for_selector(f"#bname-home option[value='{location_id}']", state="attached")
-        page.select_option("#bname-home", value=location_id)
-
-        page.click("#btn-go")
-
-        try:
-            page.wait_for_selector("#loadingweek", timeout=3000)
-        except Exception:
-            pass
-        page.wait_for_selector("#loadingweek", state="hidden", timeout=LOADING_TIMEOUT_MS)
-        page.wait_for_selector("#week-info tr")
-
-    #! 有明 A ハード等、一部コートで次週ボタン押下時に不具合が出るため、安定化処理を追加
-    def go_next_week(self, page: Page):
-        page.wait_for_selector("#next-week")
-
-        try:
-            page.wait_for_selector("#loadingweek", state="hidden", timeout=3000)
-        except Exception:
-            pass
-
-        page.click("#next-week")
-
-        try:
-            page.wait_for_selector("#loadingweek", timeout=3000)
-        except Exception:
-            pass
-        page.wait_for_selector("#loadingweek", state="hidden", timeout=LOADING_TIMEOUT_MS)
-        page.wait_for_selector("#week-info")
-
-
-# =========================
-# HTML パース
-# =========================
-class AvailabilityParser:
-    def collect_4weeks_table(self, page: Page, browser: ToritsuBrowser) -> list:
-        #! 1週目が表示されるのを確実に待つ
-        page.wait_for_selector("#week-info td[id]")
-
-        rows = []
-        for _ in range(4):
-            rows.extend(self.parse_week_table(page))
-            browser.go_next_week(page)
-
-        return rows
-
-    def parse_week_table(self, page: Page) -> list:
-        rows = []
-        table = page.query_selector("#week-info")
-        if not table:
-            return rows
-
-        tbodys = table.query_selector_all("tbody")
-        trs = tbodys[0].query_selector_all("tr") if tbodys else table.query_selector_all("tr")
-
-        for tr in trs:
-            time_label = self.parse_time_label(tr)
-            #! 時間ラベルが取れなかった行はスキップ -> OihutoB_grass の不具合対応
-            if time_label is None:
-                continue
-
-            for td in tr.query_selector_all("td"):
-                td_id = td.get_attribute("id")
-                if not td_id:
-                    continue
-                rows.append({
-                    "date": self.parse_date_from_td_id(td_id),
-                    "time": time_label,
-                    "available": self.parse_available_count(td),
-                    "td_id": td_id,
-                })
-
-        return rows
-
-    # 全角数字を半角に変換し、「時」を削って「:00」を付与
-    def parse_time_label(self, tr) -> str | None:
-        th = tr.query_selector("th")
-        if not th:
-            return None
-        raw = th.text_content() or ""
-
-        # 全角スペース除去 + strip
-        raw = raw.replace("\u3000", "").strip()
-
-        # 全角数字 → 半角
-        half = raw.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
-
-        # 「時」→「:00」
-        normalized = re.sub(r"時", ":00", half)
-
-        # HH:MM 形式以外は捨てる
-        if not re.match(r"^\d{1,2}:\d{2}$", normalized):
-            return None
-
-        return normalized
-
-    # ID から日付を取得（例: "20250929_10" → "20250929"）
-    def parse_date_from_td_id(self, td_id: str) -> str:
-        date_str = td_id.split("_")[0]
-        return datetime.strptime(date_str, "%Y%m%d").strftime("%Y/%m/%d")
-
-    def parse_available_count(self, td) -> int:
-        try:
-            input_elem = td.query_selector("input[id^='A_']")
-            if input_elem:
-                return int(input_elem.get_attribute("value"))
-        except Exception:
-            pass
-        try:
-            span_elem = td.query_selector(".calendar-availability span")
-            if span_elem:
-                return int(span_elem.inner_text().strip())
-        except Exception:
-            pass
-        return 0
-
-
-# =========================
-# DataFrame / 抽出処理
+# DataFrame構築（vacancy.pyと同一）
 # =========================
 class AvailabilityService:
     @staticmethod
     def build_dataframe(rows: list, location_name: str, court_value: str) -> pd.DataFrame:
         df = pd.DataFrame(rows)
-
         df_wide = (
-            df.pivot(index="date", columns="time", values="available")
+            df.pivot_table(index="date", columns="time", values="available", aggfunc="max")
             .fillna(0)
             .astype(int)
             .reset_index()
         )
-
-        #! HH:MM 形式の文字列を分単位の整数に変換してソート
         time_cols = [c for c in df_wide.columns if c != "date"]
-        df_wide = df_wide[
-            ["date"] + sorted(time_cols, key=AvailabilityService.time_to_minutes)
-        ]
-
+        df_wide = df_wide[["date"] + sorted(time_cols, key=AvailabilityService.time_to_minutes)]
         run_time = datetime.now(JST).strftime("%Y/%m/%d %H:%M:%S")
         df_wide.insert(0, "executed_at", run_time)
         df_wide.insert(1, "location", f"{location_name}_{court_value}")
-
         AvailabilityService.add_weekday_columns(df_wide)
         return df_wide
 
@@ -309,11 +165,8 @@ class AvailabilityService:
     def add_weekday_columns(df: pd.DataFrame):
         df["date_dt"] = pd.to_datetime(df["date"], format="%Y/%m/%d")
         df.insert(3, "weekday", df["date_dt"].dt.strftime("%a"))
-        df.insert(
-            4,
-            "is_holiday_or_weekend",
-            df["date_dt"].apply(lambda x: x.weekday() >= 5 or jpholiday.is_holiday(x)),
-        )
+        df.insert(4, "is_holiday_or_weekend",
+                  df["date_dt"].apply(lambda x: x.weekday() >= 5 or jpholiday.is_holiday(x)))
         df.drop(columns="date_dt", inplace=True)
 
     EXCLUDE_NOTIFY_TIMES = {"7:00", "17:00", "19:00"}
@@ -322,8 +175,6 @@ class AvailabilityService:
     def extract_weekend_holiday_avails(df: pd.DataFrame, location_name: str, court_value: str) -> list:
         avails = []
         time_cols = df.columns[5:]
-
-        # 土日祝（通知除外時間帯を除く）
         weekend_rows = df[df["is_holiday_or_weekend"] & (df[time_cols] > 0).any(axis=1)]
         for _, row in weekend_rows.iterrows():
             for time_slot in time_cols:
@@ -335,9 +186,94 @@ class AvailabilityService:
                         f"{location_name}_{court_value}",
                         row[time_slot],
                     ))
-
         return avails
 
+
+# =========================
+# API クライアント
+# =========================
+class ToritsuAPI:
+    def __init__(self, court_id: str, location_id: str):
+        parts = court_id.split("_")
+        self.pps_cls_cd = parts[0]   # "1000"
+        self.pps_cd = parts[1]       # "1020" or "1030"
+        self.court_id = court_id     # "1000_1020"
+        self.bld_cd = location_id
+        self.inst_cd = f"{location_id}0010"
+        self.session = requests.Session()
+        self.session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/147.0.0.0 Safari/537.36",
+            "Accept-Language": "ja-JP,ja;q=0.9",
+        })
+
+    def setup_session(self):
+        today = datetime.now(JST).strftime("%Y-%m-%d")
+        self.session.get(f"{BASE_URL}/index.jsp", timeout=15)
+        # JSが本来セットするcookieを手動セット
+        for name, val in [
+            ("purpose", self.court_id), ("bname", self.bld_cd),
+            ("daystart", today), ("collapseWhen", "undefined"), ("collapseWhere", "undefined"),
+        ]:
+            self.session.cookies.set(name, val, domain=DOMAIN, path="/web")
+        # 検索セッション初期化（サーバー側セッションへ検索コンテキストを登録）
+        self.session.post(f"{BASE_URL}/rsvWOpeInstSrchVacantAction.do", data={
+            "daystarthome": today, "daystart": today,
+            "selectPpsClPpscd": self.court_id,
+            "penaltyday": "[undefined]", "dayofweekClearFlg": "1", "timezoneClearFlg": "1",
+            "selectAreaBcd": self.bld_cd, "selectIcd": "0",
+            "selectPpsClsCd": self.pps_cls_cd, "selectPpsCd": self.pps_cd,
+            "selectBldCd": self.bld_cd, "displayNo": "pawab2000", "displayNoFrm": "pawab2000",
+        }, headers={"Referer": f"{BASE_URL}/index.jsp"}, timeout=15)
+
+    def _post_ajax(self, use_day: str, mode: str) -> dict:
+        """Ajaxエンドポイントへのリクエスト（リトライ付き）"""
+        ah = {
+            "X-Requested-With": "XMLHttpRequest",
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "Referer": f"{BASE_URL}/rsvWOpeInstSrchVacantAction.do",
+        }
+        last_exc = None
+        for attempt in range(API_RETRIES):
+            try:
+                r = self.session.post(f"{BASE_URL}/rsvWOpeInstSrchVacantAjaxAction.do",
+                    data={"displayNo": "prwrc2000", "useDay": use_day,
+                          "bldCd": self.bld_cd, "instCd": self.inst_cd,
+                          "transVacantMode": mode, "clearFlag": "0"},
+                    headers=ah, timeout=API_TIMEOUT)
+                body = r.content.decode("cp932", errors="replace").strip()
+                if not body:
+                    return {}
+                return json.loads(body)
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                last_exc = e
+        raise last_exc
+
+    def fetch_4weeks(self) -> list[dict]:
+        """4週分の空き情報をrowsとして返す"""
+        use_day = datetime.now(JST).strftime("%Y%m%d")
+        rows = []
+
+        for week in range(4):
+            mode = "11" if week == 0 else "14"
+            j = self._post_ajax(use_day, mode)
+            if not j:
+                break
+
+            for tz in j.get("result", []):
+                for t in tz["timeResult"]:
+                    start = t["startTime"]
+                    time_str = f"{start // 100}:{start % 100:02d}"
+                    ud = str(t["useDay"])
+                    date_str = f"{ud[:4]}/{ud[4:6]}/{ud[6:]}"
+                    available = t["rsvNum"] if t["alt"] == "空き" else 0
+                    rows.append({"date": date_str, "time": time_str, "available": available})
+
+            next_start = j.get("nextWeekStartDay")
+            if not next_start:
+                break
+            use_day = str(next_start)
+
+        return rows
 
 
 # =========================
@@ -354,38 +290,30 @@ def main():
         court_dict = load_env_dict("COURT_DICT")
         location_dict = load_env_dict("LOCATION_DICT")
 
-        browser_ctrl = ToritsuBrowser()
-        parser = AvailabilityParser()
-
         weekend_holiday_avails = []
         all_dfs = []
 
-        with sync_playwright() as p:
-            browser, page = browser_ctrl.setup_browser(p)
-            logger.info("Browser launched and site opened")
+        for court_id, court_value in court_dict.items():
+            for location_id, location_name in location_dict.items():
+                logger.info(f"Start Searching: {location_name}_{court_value}")
 
-            try:
-                for court_id, court_value in court_dict.items():
-                    for location_id, location_name in location_dict.items():
-                        logger.info(f"Start Searching: {location_name}_{court_value}")
+                api = ToritsuAPI(court_id, location_id)
+                api.setup_session()
+                rows = api.fetch_4weeks()
 
-                        browser_ctrl.select_court_and_location(page, court_id, location_id)
-                        rows = parser.collect_4weeks_table(page, browser_ctrl)
+                if not rows:
+                    raise RuntimeError("No data returned from API")
 
-                        df_wide = AvailabilityService.build_dataframe(rows, location_name, court_value)
-                        avails = AvailabilityService.extract_weekend_holiday_avails(df_wide, location_name, court_value)
+                df_wide = AvailabilityService.build_dataframe(rows, location_name, court_value)
+                avails = AvailabilityService.extract_weekend_holiday_avails(df_wide, location_name, court_value)
 
-                        weekend_holiday_avails.extend(avails)
-                        all_dfs.append(df_wide)
-                        logger.info(f"Available count: {len(avails)}")
+                weekend_holiday_avails.extend(avails)
+                all_dfs.append(df_wide)
+                logger.info(f"Available count: {len(avails)}")
 
-                        run_time = datetime.now(JST).strftime("%Y-%m-%d_%H:%M:%S")
-                        csv_key = f"{location_name}_{court_value}/csv/{run_time}.csv"
-                        LocalRepository.save_csv(csv_key, df_wide)
-
-            finally:
-                browser.close()
-                logger.info("Browser closed")
+                run_time = datetime.now(JST).strftime("%Y-%m-%d_%H:%M:%S")
+                csv_key = f"{location_name}_{court_value}/csv/{run_time}.csv"
+                LocalRepository.save_csv(csv_key, df_wide)
 
         # 前回との差分チェック & Discord通知（排他ロックで重複通知を防ぐ）
         weekend_key = f"{location_name}_{court_value}/latest_avails.txt"
@@ -401,7 +329,6 @@ def main():
                     DISCORD_FINE_WEBHOOK_URL,
                     DiscordNotifier.build_discord_message(weekend_holiday_avails),
                 )
-
 
         logger.info("Script finished successfully")
 

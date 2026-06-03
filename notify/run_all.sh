@@ -1,6 +1,7 @@
 #!/bin/bash
 DIR="$(cd "$(dirname "$0")" && pwd)"
 PYTHON="${PYTHON:-$DIR/../venv/bin/python}"
+VACANCY_SCRIPT="${VACANCY_SCRIPT:-vacancy_api.py}"  # vacancy.py にすると旧Playwright版に戻る
 export PYTHONDONTWRITEBYTECODE=1
 RUN_LOG="$DIR/../data/run_logs"
 mkdir -p "$RUN_LOG"
@@ -15,7 +16,7 @@ echo "$(date): start" >> "$RUN_LOG/cron.log"
 pids=()
 for env_file in "$DIR/envs"/*.env; do
     name="$(basename "$env_file" .env)"
-    "$PYTHON" "$DIR/vacancy.py" --env-file "$env_file" >> "$RUN_LOG/${name}.log" 2>&1 &
+    "$PYTHON" "$DIR/$VACANCY_SCRIPT" --env-file "$env_file" >> "$RUN_LOG/${name}.log" 2>&1 &
     pids+=($!)
     echo "  launched: $name (pid=$!)"
 done
