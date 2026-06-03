@@ -5,7 +5,8 @@ services:
       - SCRAPE_OFFSET=0
     volumes:
       - ./data:/app/data
-      - ./notify/envs:/app/notify/envs:ro
+      - ./notify:/app/notify
+      - ./scripts:/app/scripts:ro
     entrypoint: ["/app/notify/docker_entrypoint.sh"]
     restart: unless-stopped
 
@@ -15,7 +16,8 @@ services:
       - SCRAPE_OFFSET=30
     volumes:
       - ./data:/app/data
-      - ./notify/envs:/app/notify/envs:ro
+      - ./notify:/app/notify
+      - ./scripts:/app/scripts:ro
     entrypoint: ["/app/notify/docker_entrypoint.sh"]
     restart: unless-stopped
 
@@ -25,7 +27,8 @@ services:
       - SCRAPE_OFFSET=60
     volumes:
       - ./data:/app/data
-      - ./notify/envs:/app/notify/envs:ro
+      - ./notify:/app/notify
+      - ./scripts:/app/scripts:ro
     entrypoint: ["/app/notify/docker_entrypoint.sh"]
     restart: unless-stopped
 
@@ -35,6 +38,7 @@ services:
       - SCRAPE_OFFSET=90
     volumes:
       - ./data:/app/data
-      - ./notify/envs:/app/notify/envs:ro
+      - ./notify:/app/notify
+      - ./scripts:/app/scripts:ro
     entrypoint: ["/app/notify/docker_entrypoint.sh"]
     restart: unless-stopped

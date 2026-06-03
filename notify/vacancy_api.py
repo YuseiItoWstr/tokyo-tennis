@@ -7,6 +7,7 @@ vacancy_api.py — Playwright不要の軽量スクレイパー
 import os
 import json
 import subprocess
+import sys
 import urllib.request
 import logging
 import io
@@ -51,7 +52,7 @@ LABEL_TO_COURT_KEY = {
 }
 _PROJ_ROOT = Path(__file__).parent.parent
 RSV_SCRIPT  = _PROJ_ROOT / "scripts" / "reserve_api.py"
-VENV_PYTHON = _PROJ_ROOT / "venv" / "bin" / "python"
+VENV_PYTHON = sys.executable  # コンテナ/ローカル両対応
 
 
 def load_env_dict(name: str) -> dict:
