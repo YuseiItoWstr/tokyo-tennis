@@ -50,7 +50,7 @@ LABEL_TO_COURT_KEY = {
     "Kiba_grass":    "kiba_grass",
 }
 _PROJ_ROOT = Path(__file__).parent.parent
-RSV_SCRIPT  = _PROJ_ROOT / "scripts" / "reserve.py"
+RSV_SCRIPT  = _PROJ_ROOT / "scripts" / "reserve_api.py"
 VENV_PYTHON = _PROJ_ROOT / "venv" / "bin" / "python"
 
 

@@ -19,6 +19,7 @@ import requests as http
 from datetime import datetime, timedelta, timezone
 
 from playwright.sync_api import sync_playwright, Page
+from playwright_stealth import Stealth
 
 # ====================
 # コート定義
@@ -64,8 +65,8 @@ def _capsolver_solve(task: dict) -> str:
     }, timeout=30)
     task_id = resp.json()["taskId"]
     print(f"[CAPTCHA] task={task_id}")
-    for _ in range(30):
-        time.sleep(3)
+    for _ in range(90):
+        time.sleep(1)
         res = http.post("https://api.capsolver.com/getTaskResult", json={
             "clientKey": CAPSOLVER_API_KEY, "taskId": task_id
         }, timeout=30).json()
@@ -382,6 +383,7 @@ def main():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=not args.headed)
         page = browser.new_page()
+        Stealth().apply_stealth_sync(page)  # headless検知を回避してv3スコアを上げる
         try:
             login(page, args.user_id, args.password)
             navigate_to_vacancy(page, court["court_id"], court["location_id"], target_date)
