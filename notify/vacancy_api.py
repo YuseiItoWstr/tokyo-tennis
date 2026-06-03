@@ -6,6 +6,7 @@ vacancy_api.py — Playwright不要の軽量スクレイパー
 """
 import os
 import json
+import subprocess
 import urllib.request
 import logging
 import io
@@ -15,7 +16,8 @@ import requests
 import pandas as pd
 import jpholiday
 from datetime import datetime, timedelta, timezone
-from dotenv import load_dotenv
+from pathlib import Path
+from dotenv import load_dotenv, dotenv_values
 
 _parser = argparse.ArgumentParser()
 _parser.add_argument("--env-file", default=None)
@@ -34,6 +36,22 @@ DISCORD_NOTIFY = os.getenv("DISCORD_NOTIFY", "true") != "false"
 DATA_DIR = os.getenv("DATA_DIR", os.path.join(os.path.expanduser("~"), "tokyo-tennis", "data"))
 API_TIMEOUT = int(os.getenv("API_TIMEOUT", "30"))   # 秒
 API_RETRIES = int(os.getenv("API_RETRIES", "3"))
+
+# 自動予約設定
+AUTO_RSV_TIMES = {"13:00", "15:00"}
+AUTO_RSV_MIN_DAYS = 4
+# reserve.py のコートキーへのマッピング
+LABEL_TO_COURT_KEY = {
+    "Kameido_grass": "kameido_grass",
+    "OihutoA_hard":  "oihuto_a_hard",
+    "OihutoB_hard":  "oihuto_b_hard",
+    "Sarue_grass":   "sarue_grass",
+    "AriakeA_hard":  "ariake_a_hard",
+    "Kiba_grass":    "kiba_grass",
+}
+_PROJ_ROOT = Path(__file__).parent.parent
+RSV_SCRIPT  = _PROJ_ROOT / "scripts" / "reserve.py"
+VENV_PYTHON = _PROJ_ROOT / "venv" / "bin" / "python"
 
 
 def load_env_dict(name: str) -> dict:
@@ -133,6 +151,78 @@ class DiscordNotifier:
         for date, _, rsv_time, location, vacants in avails:
             lines.append(f"- {date} {rsv_time} {location}（{vacants}枠）")
         return "\n".join(lines)
+
+
+# =========================
+# 自動予約
+# =========================
+def _auto_reserve_if_new(current_avails: list, previous_text: str | None):
+    """
+    新規空き（13:00/15:00 かつ 4日以上後）を検知したら reserve.py を呼び出す。
+    「新規」= 前回スナップショットに存在しなかったエントリ。
+    """
+    # 認証情報: env → notify/.env の順で取得
+    base_env = dotenv_values(Path(__file__).parent / ".env")
+    user_id  = os.getenv("TORITSU_USER_ID") or base_env.get("TORITSU_USER_ID", "")
+    password = os.getenv("TORITSU_PASSWORD") or base_env.get("TORITSU_PASSWORD", "")
+    cap_key  = os.getenv("CAPSOLVER_API_KEY") or base_env.get("CAPSOLVER_API_KEY", "")
+    if not user_id or not password or not cap_key:
+        return
+
+    now_date = datetime.now(JST).date()
+
+    # 前回スナップショットを (date, time, location) セットに変換
+    prev_entries: set[tuple] = set()
+    if previous_text:
+        for line in previous_text.strip().splitlines():
+            parts = line.split(",", 3)
+            if len(parts) >= 3:
+                prev_entries.add((parts[0], parts[1], parts[2]))
+
+    logger = logging.getLogger("court_vacancy_api")
+    for avail_date, _, avail_time, avail_location, _ in current_avails:
+        # 時刻条件
+        if avail_time not in AUTO_RSV_TIMES:
+            continue
+        # 新規チェック
+        if (avail_date, avail_time, avail_location) in prev_entries:
+            continue
+        # 日付条件
+        date_str = avail_date.split(" ")[0]  # "2026/06/22 (Mon)" → "2026/06/22"
+        avail_dt = datetime.strptime(date_str, "%Y/%m/%d").date()
+        if (avail_dt - now_date).days < AUTO_RSV_MIN_DAYS:
+            continue
+        court_key = LABEL_TO_COURT_KEY.get(avail_location)
+        if not court_key:
+            continue
+
+        rsv_date = avail_dt.strftime("%Y-%m-%d")
+        logger.info(f"[AUTO-RSV] 新規空き検知 → 自動予約: {avail_location} {rsv_date} {avail_time}")
+        try:
+            DiscordNotifier.send_to_discord(
+                DISCORD_FINE_WEBHOOK_URL,
+                f"🎾 **【自動予約開始】** {avail_location} {rsv_date} {avail_time} の新規空きを検知しました",
+            )
+        except Exception:
+            pass
+
+        try:
+            result = subprocess.run(
+                [str(VENV_PYTHON), str(RSV_SCRIPT),
+                 "--user-id", user_id, "--password", password,
+                 "--court", court_key, "--date", rsv_date, "--time", avail_time],
+                env={**os.environ, "CAPSOLVER_API_KEY": cap_key},
+                capture_output=True, text=True, timeout=360,
+            )
+            ok = result.returncode == 0
+            logger.info(f"[AUTO-RSV] rc={result.returncode}\n{result.stdout}\n{result.stderr}")
+            status_msg = "✅ 成功" if ok else f"❌ 失敗 (rc={result.returncode})"
+            DiscordNotifier.send_to_discord(
+                DISCORD_FINE_WEBHOOK_URL,
+                f"🎾 **【自動予約{status_msg}】** {avail_location} {rsv_date} {avail_time}",
+            )
+        except Exception as e:
+            logger.error(f"[AUTO-RSV] エラー: {e}")
 
 
 # =========================
@@ -324,11 +414,13 @@ def main():
             previous = LocalRepository.load_text(weekend_key)
             same = current == previous
             LocalRepository.save_text(weekend_key, current)
-            if weekend_holiday_avails and not same and DISCORD_NOTIFY:
-                DiscordNotifier.send_to_discord(
-                    DISCORD_FINE_WEBHOOK_URL,
-                    DiscordNotifier.build_discord_message(weekend_holiday_avails),
-                )
+            if weekend_holiday_avails and not same:
+                if DISCORD_NOTIFY:
+                    DiscordNotifier.send_to_discord(
+                        DISCORD_FINE_WEBHOOK_URL,
+                        DiscordNotifier.build_discord_message(weekend_holiday_avails),
+                    )
+                _auto_reserve_if_new(weekend_holiday_avails, previous)
 
         logger.info("Script finished successfully")
 
