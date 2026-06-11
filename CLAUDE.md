@@ -15,7 +15,7 @@
 
 ## 監視コート
 
-OihutoA_hard / OihutoB_hard / OihutoB_grass / Sarue_grass / AriakeA_hard / Kameido_grass / Kiba_grass
+OihutoA_hard / OihutoB_hard / OihutoB_grass / Sarue_grass / AriakeA_hard / AriakeB_hard / AriakeC_grass / Kameido_grass / Kiba_grass / Oshima_grass / Higashiayase_grass / Shioiri_grass / Shinozaki_grass
 
 ## 常駐サービス（systemd --user）
 
@@ -28,7 +28,7 @@ rsv-checker          # /chk Bot
 ## Cron
 
 ```
-*/2 * * * *  notify/run_all.sh     # 7コート並列スクレイピング
+4コンテナ（30秒ずらし）  notify/run_all.sh  # 12コートをコンテナ間で分担・シリアル実行
 *   * * * *  notify/merge_csv.py  # latest_merged.csv 更新
 ```
 
@@ -54,6 +54,11 @@ venv/bin/python notify/vacancy.py --env-file notify/envs/OihutoA_hard.env
 |---|---|
 | `/scrape-stats` | 直近24時間のスクレイピング成功率を可視化 |
 | `/bot-status` | 全Botのステータス一覧 |
+| `/git-cm` | commit & push（`.claude/skills/commit/SKILL.md` に従う） |
+
+## Git ルール
+
+commit・push を行うときは **必ず** `.claude/skills/commit/SKILL.md`（skill名: `git-comm-push`）の手順に従うこと。Bashで直接 `git commit` / `git push` しない。
 
 ## データ構造
 

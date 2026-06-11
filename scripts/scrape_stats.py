@@ -19,6 +19,7 @@ COURTS = [
     "OihutoA_hard", "OihutoB_hard", "OihutoB_grass",
     "Sarue_grass", "AriakeA_hard", "AriakeB_hard", "AriakeC_grass",
     "Kameido_grass", "Kiba_grass", "Oshima_grass",
+    "Higashiayase_grass", "Shioiri_grass", "Shinozaki_grass",
 ]
 
 MONTHS = {"Jan":1,"Feb":2,"Mar":3,"Apr":4,"May":5,"Jun":6,

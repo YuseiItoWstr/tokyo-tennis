@@ -6,6 +6,7 @@ vacancy_api.py — Playwright不要の軽量スクレイパー
 """
 import os
 import json
+import time
 import subprocess
 import sys
 import urllib.request
@@ -14,6 +15,7 @@ import io
 import fcntl
 import argparse
 import requests
+from curl_cffi import requests as curl_requests
 import pandas as pd
 import jpholiday
 from datetime import datetime, timedelta, timezone
@@ -157,10 +159,11 @@ class DiscordNotifier:
 # =========================
 # 自動予約
 # =========================
-def _auto_reserve_if_new(current_avails: list, previous_text: str | None):
+def _auto_reserve_if_new(current_avails: list, previous_text: str | None) -> set[tuple]:
     """
     新規空き（13:00/15:00 かつ 4日以上後）を検知したら reserve.py を呼び出す。
     「新規」= 前回スナップショットに存在しなかったエントリ。
+    戻り値: 予約失敗した (avail_date, avail_time, avail_location) のセット
     """
     # 認証情報: env → notify/.env の順で取得
     base_env = dotenv_values(Path(__file__).parent / ".env")
@@ -181,6 +184,7 @@ def _auto_reserve_if_new(current_avails: list, previous_text: str | None):
                 prev_entries.add((parts[0], parts[1], parts[2]))
 
     logger = logging.getLogger("court_vacancy_api")
+    failed: set[tuple] = set()
     for avail_date, _, avail_time, avail_location, _ in current_avails:
         # 時刻条件
         if avail_time not in AUTO_RSV_TIMES:
@@ -222,8 +226,13 @@ def _auto_reserve_if_new(current_avails: list, previous_text: str | None):
                 DISCORD_FINE_WEBHOOK_URL,
                 f"🎾 **【自動予約{status_msg}】** {avail_location} {rsv_date} {avail_time}",
             )
+            if not ok:
+                failed.add((avail_date, avail_time, avail_location))
         except Exception as e:
             logger.error(f"[AUTO-RSV] エラー: {e}")
+            failed.add((avail_date, avail_time, avail_location))
+
+    return failed
 
 
 # =========================
@@ -291,15 +300,15 @@ class ToritsuAPI:
         self.court_id = court_id     # "1000_1020"
         self.bld_cd = location_id
         self.inst_cd = f"{location_id}0010"
-        self.session = requests.Session()
-        self.session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/147.0.0.0 Safari/537.36",
-            "Accept-Language": "ja-JP,ja;q=0.9",
-        })
+        # ChromeのTLSフィンガープリントを模倣してbot検出を回避
+        self.session = curl_requests.Session(impersonate="chrome120")
 
     def setup_session(self):
         today = datetime.now(JST).strftime("%Y-%m-%d")
-        self.session.get(f"{BASE_URL}/index.jsp", timeout=15)
+        r = self.session.get(f"{BASE_URL}/index.jsp", timeout=15)
+        # エラーHTMLが返った場合はセッション確立失敗
+        if len(r.content) < 1000:
+            raise RuntimeError(f"setup_session: index.jsp blocked ({len(r.content)} bytes)")
         # JSが本来セットするcookieを手動セット
         for name, val in [
             ("purpose", self.court_id), ("bname", self.bld_cd),
@@ -335,7 +344,14 @@ class ToritsuAPI:
                 if not body:
                     return {}
                 return json.loads(body)
-            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            except json.JSONDecodeError as e:
+                last_exc = e
+                time.sleep(10)  # ブロック解除を待ってからリトライ
+                try:
+                    self.setup_session()
+                except RuntimeError:
+                    pass
+            except (curl_requests.exceptions.Timeout, curl_requests.exceptions.ConnectionError) as e:
                 last_exc = e
         raise last_exc
 
@@ -421,7 +437,13 @@ def main():
                         DISCORD_FINE_WEBHOOK_URL,
                         DiscordNotifier.build_discord_message(weekend_holiday_avails),
                     )
-                _auto_reserve_if_new(weekend_holiday_avails, previous)
+                # 自動予約は一時停止中
+                # failed = _auto_reserve_if_new(weekend_holiday_avails, previous)
+                # if failed:
+                #     retry_avails = [a for a in weekend_holiday_avails
+                #                     if (a[0], a[2], a[3]) not in failed]
+                #     LocalRepository.save_text(weekend_key,
+                #         LocalRepository.serialize_weekend_avails(retry_avails))
 
         logger.info("Script finished successfully")
 
